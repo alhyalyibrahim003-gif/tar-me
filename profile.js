@@ -12,10 +12,9 @@ const userName = localStorage.getItem('userName') || 'يا صديقي';
 const userAge = localStorage.getItem('userAge') || '?';
 let userCountry = localStorage.getItem('userCountry') || '';
 
-// تنظيف البلد بشكل قوي (إزالة المسافات وتحويل إلى أحرف صغيرة)
+// تنظيف البلد بشكل قوي
 userCountry = userCountry.trim().toLowerCase();
 
-// إذا لم يكن للمستخدم بلد، نعطيه قيمة افتراضية
 if (!userCountry) {
     userCountry = 'غير محدد';
     localStorage.setItem('userCountry', userCountry);
@@ -148,7 +147,6 @@ const peer = new Peer({
 const remoteVideo = document.getElementById("remote");
 const localVideo = document.getElementById("local");
 const myIdSpan = document.getElementById("myId");
-const onlineListDiv = document.getElementById("onlineList");
 const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 const messagesDiv = document.getElementById("messages");
@@ -336,9 +334,7 @@ peer.on("open", function(id) {
         country: user.country,
         lastSeen: firebase.database.ServerValue.TIMESTAMP
     };
-    console.log("📤 رفع بيانات المستخدم إلى Firebase:", dataToSend);
     userStatusRef.set(dataToSend);
-
     userStatusRef.onDisconnect().remove();
 
     heartbeatInterval = setInterval(function() {
@@ -347,18 +343,16 @@ peer.on("open", function(id) {
 });
 
 peer.on("disconnected", function() {
-    console.warn("⚠️ تم فصل الاتصال بخادم المكالمات، جاري إزالة اسمك من القائمة وإعادة المحاولة...");
-    if (myPeerId) {
-        onlineRef.child(myPeerId).remove(); 
-    }
+    console.warn("⚠️ تم فصل الاتصال، جاري إعادة المحاولة...");
+    if (myPeerId) onlineRef.child(myPeerId).remove(); 
     peer.reconnect(); 
 });
 
 peer.on("error", function(err) {
     console.error("❌ خطأ PeerJS:", err);
     if (err.type === 'peer-unavailable') {
-        alert("الطرف الآخر غير متاح حالياً (ربما أغلق الشاشة أو انقطع اتصاله).");
-        updateOnlineList(); 
+        alert("الطرف الآخر غير متاح حالياً.");
+        onlineRef.once('value'); 
     } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'unavailable-id') {
         if (myPeerId) onlineRef.child(myPeerId).remove();
         peer.reconnect();
@@ -399,102 +393,106 @@ peer.on("connection", function(conn) {
     currentConnection = conn;
 });
 
-// ---------- تعبئة قائمة البلدان (مع تحديث فوري) ----------
-function populateCountryFilter() {
-    const filterSelect = document.getElementById('countryFilter');
-    if (!filterSelect) return;
-    onlineRef.once('value', (snapshot) => {
-        const users = snapshot.val();
-        const countries = new Set();
-        if (users) {
-            Object.values(users).forEach(u => {
-                if (u.country && u.country.trim() !== '') {
-                    countries.add(u.country.trim().toLowerCase());
-                }
-            });
-        }
-        let options = '<option value="all">جميع البلدان</option>';
-        Array.from(countries).sort().forEach(c => {
-            options += `<option value="${c}">${c}</option>`;
-        });
-        filterSelect.innerHTML = options;
-        if (userCountry && countries.has(userCountry)) {
-            filterSelect.value = userCountry;
-        }
-        console.log("🌍 قائمة البلدان المتاحة:", Array.from(countries));
-    });
-}
-
-// ---------- استماع لتغييرات المتصلين (مع حساب العدد بدقة) ----------
+// ====================================================================
+// ---------- الاستماع للمتصلين (التحديث الفوري والفلترة والعدد) ----------
+// ====================================================================
 onlineRef.on("value", function(snapshot) {
+    const onlineListDiv = document.getElementById("onlineList");
+    const filterSelect = document.getElementById("countryFilter");
+    const onlineCountSpan = document.getElementById("onlineCount");
+
     if (!onlineListDiv) return;
+
     const users = snapshot.val();
     onlineListDiv.innerHTML = "";
     
-    let sameCountryCount = 0;
-    let totalOnline = 0;
     const now = Date.now();
-    const selectedCountry = document.getElementById('countryFilter')?.value || 'all';
-    const currentUserCountry = userCountry; // تم تنظيفه وتحويله إلى أحرف صغيرة
+    let currentSelection = filterSelect ? filterSelect.value : 'all';
+    let visibleCount = 0;
 
     if (!users) {
         onlineListDiv.innerHTML = "<span class='online-list-placeholder'>لا يوجد متصلون</span>";
-    } else {
-        let count = 0;
-        for (const key in users) {
-            if (key === myPeerId) continue;
-            const u = users[key];
-            const isOnline = u.lastSeen && (now - u.lastSeen < 30000);
-            if (!isOnline) continue;
-            
-            totalOnline++;
-            
-            // تنظيف بلد المستخدم الآخر (إزالة المسافات وتحويل إلى أحرف صغيرة)
-            const otherCountry = u.country ? u.country.trim().toLowerCase() : '';
-            
-            // مقارنة دقيقة
-            if (currentUserCountry && currentUserCountry !== 'غير محدد' && otherCountry === currentUserCountry) {
-                sameCountryCount++;
-                console.log(`✅ مستخدم من نفس البلد: ${u.name} (${otherCountry})`);
-            } else {
-                console.log(`👤 مستخدم آخر: ${u.name} (${otherCountry || 'بدون بلد'})`);
-            }
-            
-            if (selectedCountry !== 'all' && otherCountry !== selectedCountry) continue;
-            count++;
-            const btn = document.createElement("button");
-            btn.className = "user-btn";
-            if (key === currentCallPeerId) btn.classList.add("active");
-            btn.textContent = u.name + " (" + (u.age || "?") + ")";
-            btn.onclick = (function(pid) {
-                return function() { toggleCall(pid); };
-            })(key);
-            onlineListDiv.appendChild(btn);
-        }
-        if (count === 0) {
-            onlineListDiv.innerHTML = "<span class='online-list-placeholder'>لا يوجد متصلون آخرون</span>";
+        if (onlineCountSpan) onlineCountSpan.innerText = "(0)";
+        if (filterSelect) filterSelect.innerHTML = '<option value="all">جميع البلدان</option>';
+        return;
+    }
+
+    // 1. استخراج البلدان النشطة حالياً لتحديث القائمة المنسدلة
+    const activeCountries = new Set();
+    for (const key in users) {
+        if (key === myPeerId) continue;
+        const u = users[key];
+        const isOnline = u.lastSeen && (now - u.lastSeen < 30000);
+        if (isOnline && u.country && u.country.trim() !== '' && u.country !== 'غير محدد') {
+            activeCountries.add(u.country.trim().toLowerCase());
         }
     }
-    
-    // تحديث العداد
-    const onlineCountSpan = document.getElementById('onlineCount');
-    if (onlineCountSpan) {
-        if (currentUserCountry && currentUserCountry !== 'غير محدد') {
-            onlineCountSpan.innerText = `(${sameCountryCount})`;
-            console.log(`📊 عدد المتصلين من بلد "${currentUserCountry}": ${sameCountryCount}`);
+
+    // 2. تحديث قائمة البلدان المنسدلة بذكاء
+    if (filterSelect) {
+        let optionsHTML = '<option value="all">جميع البلدان</option>';
+        Array.from(activeCountries).sort().forEach(country => {
+            optionsHTML += `<option value="${country}">${country}</option>`;
+        });
+        filterSelect.innerHTML = optionsHTML;
+        
+        // إبقاء الخيار المحدد مسبقاً إذا كان لا يزال متاحاً
+        if (currentSelection !== 'all' && activeCountries.has(currentSelection)) {
+            filterSelect.value = currentSelection;
         } else {
-            onlineCountSpan.innerText = `(${totalOnline})`;
-            console.warn("⚠️ المستخدم ليس له بلد مخزن. يتم عرض إجمالي المتصلين.");
+            filterSelect.value = 'all';
+            currentSelection = 'all';
         }
+    }
+
+    // 3. بناء أزرار المستخدمين وحساب العدد الحقيقي
+    for (const key in users) {
+        if (key === myPeerId) continue;
+        const u = users[key];
+        const isOnline = u.lastSeen && (now - u.lastSeen < 30000);
+        if (!isOnline) continue;
+        
+        const otherCountry = u.country ? u.country.trim().toLowerCase() : '';
+        
+        // تطبيق الفلتر لتجاوز من ليسوا في البلد المحدد
+        if (currentSelection !== 'all' && otherCountry !== currentSelection) continue;
+        
+        visibleCount++; // زيادة عداد الأشخاص الظاهرين في القائمة
+        
+        const btn = document.createElement("button");
+        btn.className = "user-btn";
+        if (key === currentCallPeerId) btn.classList.add("active");
+        
+        // حماية قوية ضد undefined والأسماء الفارغة
+        const safeName = (u.name && u.name !== "undefined" && String(u.name).trim() !== "") ? u.name : "مجهول";
+        const safeAge = (u.age && u.age !== "undefined" && String(u.age).trim() !== "") ? u.age : "?";
+        
+        // عرض الاسم والعمر فقط كما طلبت
+        btn.textContent = safeName + " (" + safeAge + ")";
+        
+        btn.onclick = (function(pid) {
+            return function() { toggleCall(pid); };
+        })(key);
+        
+        onlineListDiv.appendChild(btn);
+    }
+
+    // 4. رسالة في حال عدم وجود أي شخص يطابق الفلتر
+    if (visibleCount === 0) {
+        onlineListDiv.innerHTML = "<span class='online-list-placeholder'>لا يوجد متصلون آخرون</span>";
+    }
+
+    // 5. طباعة الرقم النهائي في الشاشة
+    if (onlineCountSpan) {
+        onlineCountSpan.innerText = `(${visibleCount})`;
     }
 });
 
-// ---------- مستمع تغيير الفلتر (تحديث فوري) ----------
-const filterSelect = document.getElementById('countryFilter');
-if (filterSelect) {
-    filterSelect.addEventListener('change', () => {
-        // إعادة تحديث القائمة فوراً
-        onlineRef.once('value');
+// ---------- مستمع الفلتر لتحديث الأرقام فوراً عند تغيير البلد ----------
+const filterSelectElement = document.getElementById('countryFilter');
+if (filterSelectElement) {
+    filterSelectElement.addEventListener('change', () => {
+        onlineRef.once('value'); // إجبار التحديث
     });
 }
 
@@ -512,7 +510,7 @@ function toggleCall(peerId) {
         currentCallPeerId = null;
         if (remoteVideo) remoteVideo.srcObject = null;
         if (endCallBtn) endCallBtn.classList.add("hidden");
-        updateOnlineList();
+        onlineRef.once('value');
     } else {
         if (currentCall) {
             currentCall.close();
@@ -533,8 +531,8 @@ function toggleCall(peerId) {
         currentCall.on("error", function(err) {
             console.error("❌ خطأ في المكالمة:", err);
             if (err.type === 'peer-unavailable') {
-                alert('عذراً، الطرف الآخر غير متاح حالياً. سيتم إخفاء اسمه لحين عودته.');
-                updateOnlineList();
+                alert('عذراً، الطرف الآخر غير متاح حالياً.');
+                onlineRef.once('value');
             } else {
                 alert('فشل الاتصال: ' + (err.message || err.type));
             }
@@ -545,10 +543,6 @@ function toggleCall(peerId) {
         currentConnection.on("data", function(data) { displayMessage(data, "other"); });
         if (endCallBtn) endCallBtn.classList.remove("hidden");
     }
-}
-
-function updateOnlineList() {
-    onlineRef.once("value");
 }
 
 // ---------- الدردشة ----------
@@ -646,8 +640,3 @@ initCamera().then(() => {
 }).catch(err => {
     console.error("❌ فشل تشغيل الكاميرا:", err);
 });
-
-// ---------- تعبئة قائمة البلدان بعد تحميل الصفحة ----------
-setTimeout(() => {
-    populateCountryFilter();
-}, 1000);
